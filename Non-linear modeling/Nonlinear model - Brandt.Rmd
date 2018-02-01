@@ -1,0 +1,637 @@
+---
+author: "John Brandt"
+date: "12/14/2017"
+output:
+  html_document:
+    number_sections: yes
+    toc: no
+    toc_float: no
+  pdf_document:
+    number_sections: yes
+---
+<style type="text/css"> body, td { font-size: 16px; } code.r{ font-size: 14px; } pre { font-size: 12px } </style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment=NA)
+```
+
+Modeling of bear weight based upon bodily measurements using mixed effects and generalized least squares modeling accounting for covariance-variance structures and within-group correlation.
+
+Based upon predicted vs. observed, residuals, residual sum of squares, and AIC, this script determines that bear weight is modeled best by a cubic-splines transformed mixed-effect model in the form of:
+
+
+```{r, eval=FALSE}
+
+lme(weight ~ chestGSc + lengthSc + headWSc + ageNA + 
+      splinepoints_chest + splinepoints_length, 
+            random = ~ 1 | name/age,
+            weights=varExp(form=~as.vector(chestGSc + splinepoints_chest)),
+            correlation=corCAR1(form = ~ age | name))
+```
+
+where:
+
+* chestGSc = scaled chest girth
+* lengthSc = scaled length
+* headWSc = scaled head width
+* ageNA = dummy variable, indicating whether or not age was imputed
+* splinepoints_chest = cubic splines transformation of chest girth, with knots at 7, 25, and 90 percent
+* splinepoints_length = cubic splines transformation of length, with knots at 10, 35, and 75 percent
+* autocorrelation is modeled with an order of 1, with a continuous time covarariate of age grouped by the name of each bear
+* within-group variance is modeled using the exponential variance of scaled chest girth plus its spline transformation
+
+
+# Read in Data
+```{r, message=FALSE, warning=FALSE}
+require(pacman)
+p_load(ggplot2, nlme, lme4, reshape2, dplyr, car)
+
+bears <- read.fwf("Bears.full.dat", skip=20,
+      col.names=c("id", "age", "month", "sex", "headL", "headW",
+                 "neckG", "length", "chestG", "weight", "obs", "name"),
+      widths=c(9, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8, 10), 
+      strip.white=T, na.string = "")
+```
+
+Missing bear names are set to "Unnamed 1" and "Unnamed 2" and relevant columns are converted to factors
+```{r}
+bears$name <- as.character(bears$name)
+bears[87,12] <- "Unnamed1"
+bears[88,12] <- "Unnamed2"
+bears$name <- as.factor(bears$name)
+bears$month <- as.factor(bears$month)
+bears$sex <- as.factor(bears$sex)
+attach(bears)
+```
+
+# Correlations
+
+Exploratory correlations show strong relationships between possible predictor variables and bear weight.
+
+```{r}
+cor(weight, bears[,5:9])
+```
+
+# Initial plotting
+
+Initial plots show nonlinear relationships for length, chest, and neck.
+
+```{r, message=FALSE, warning=FALSE}
+bearsplotdata <- bears[,0:12]
+bearsplotdata <- bearsplotdata[,-c(1,4,11,12)]
+bearsplotdata <- melt(bearsplotdata, id.vars=c("weight"))
+
+bearsplot1 <- ggplot(data=bearsplotdata, aes(y=weight, x=value))+
+  theme_bw()+
+  geom_point()+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.background = element_blank(),
+        panel.grid.minor = element_blank()) + 
+  facet_wrap(~variable, ncol=3, scales="free_x")
+print(bearsplot1)
+```
+
+# Transformations
+
+Transform length, chest, and neck based upon observed relationships in the initial plots.
+
+```{r}
+bears$lengthtransf <- 1/bears$length
+bears$chestGtransf <- bears$chestG^2
+bears$neckGtransf <- bears$neckG^2
+
+```
+
+# Scale response and predictor variables
+
+The measurements and weights that we are using in the model vary by more than an order of magnitude. In order for the model to converge, we need to make sure that the predictors and response variables have similar ranges. 
+
+All predictor variables were scaled by subtracting the mean and dividing by the standard deviation.
+
+```{r}
+bears$headLSc <- scale(bears$headL)
+bears$neckGSctransf <- scale(bears$neckGtransf)
+bears$neckGSc <- scale(bears$neckG)
+bears$headWSc <- scale(bears$headW)
+bears$lengthSc <- scale(bears$length)
+bears$lengthSctransf <- scale(bears$lengthtransf)
+bears$chestGSc <- scale(bears$chestG)
+bears$chestGSctransf <- scale(bears$chestGtransf)
+```
+
+# Deal with missing age data
+
+I chose a model-based imputation as outlined in Andrew Gelman's 2012 textbook "Data Analysis Using Regression and Multilevel/Hierarchical Models". I create a dummy variable for future models indicating whether or not the age data is imputed, and then infer the value based upon the relationship between age and head width. 
+
+I build a linear model relating age to  scaled head width, resulting in an estimate of 21.532. This means that, for every 1 unit change in the standard deviation of head width, age increases by 21.532 months. I then apply this relationship to the missing age data.
+
+As a means to check whether the imputation was successful, I compare the mean of the imputed age to the mean of the known age. I then compare the correlation between age and a variable not used to impute age (chest girth) for imputed and known age.
+
+Age is similar between the two (43.4 vs 46.8), as are the correlations (0.734 vs. 0.731). Thus, I continue to use the imputed age data in the modeling process.
+
+```{r}
+bears$ageNA <- 0
+bears$ageNA[is.na(bears$age)] <- 1
+
+summary(lm(bears$age[bears$ageNA==0] ~ bears$headWSc[bears$ageNA==0]))
+meanage <- mean(bears$age[bears$ageNA==0])
+bearschange <- bears$headWSc[bears$ageNA==1]*21.532
+
+bears$age[bears$ageNA==1] <- meanage + bearschange
+bears$age <- jitter(bears$age, amount=0.0001)
+
+mean(bears$age[bears$ageNA==1])
+mean(bears$age[bears$ageNA==0])
+
+cor(bears$chestG[bears$ageNA==0], bears$age[bears$ageNA==0])
+cor(bears$chestG[bears$ageNA==1], bears$age[bears$ageNA==1])
+bears$agescale <- scale(bears$age)
+```
+
+
+# Linear model
+
+I start by building a simple linear model to get a base AIC score and model structure moving forward.
+
+```{r}
+lm1 <- lm(weight ~ chestGSctransf + sex + neckGSctransf + lengthSctransf + headLSc 
+          + headWSc, data=bears)
+
+summary(lm1)
+
+AIC(lm1)
+
+```
+
+## Variable Inflation Factors
+
+Variable inflation factors indicate that chestG and neckG are highly colinear.
+
+```{r}
+vif(lm1)
+```
+
+Indeed, chestG and neckG have a 0.94 correlation.
+
+```{r}
+cor(bears$chestGSctransf, bears$neckGSctransf)
+```
+
+I keep chestG because it has a slightly higher correlation with weight. I remove neckG.
+
+```{r}
+cor(bears$chestGSctransf, bears$weight)
+cor(bears$neckGSctransf, bears$weight)
+```
+
+# Mixed-effect model with power variance function
+
+I first build a mixed-effects model with all of the potential predictor variables and no controls for heteroskedasticity or longitudinality.
+
+I group the data by name and age, and allow the slope and intercept to vary by groups.
+
+```{r}
+lme_init <- lme(weight ~ chestGSctransf + lengthSctransf + headWSc +  headLSc,
+            random = ~ 1 | name/age, data=bears)
+```
+            
+Remove insignificant variable (headLSc) and begin trying various weighting choices.
+
+I choose between the varPower and varExp variance function classes based upon visual inspections of the variance in the initial facetted plot.
+
+```{r}
+lme.power <- lme(weight ~ chestGSctransf + lengthSctransf + headWSc,
+            random = ~ 1 | name/age, 
+            weights=varPower(form=~as.vector(lengthSctransf)), data=bears)
+
+lme.exp <- lme(weight ~ chestGSctransf + lengthSctransf + headWSc,
+            random = ~ 1 | name/age, 
+            weights=varExp(form=~as.vector(lengthSctransf)), data=bears)
+```
+
+Choose the varExp function to model variance-covariance structure, based upon its lower AIC score.
+
+```{r}
+AIC(lme.power, lme.exp)
+```
+
+## Residuals
+
+Residuals for the linear mixed-effect model.
+
+```{r}
+resid <- resid(lme.exp)
+residplot <- ggplot(data=bears, aes(y=resid, x=weight))+
+  geom_point()+
+  geom_hline(yintercept=0, color="blue")+
+  theme_bw()
+
+print(residplot)
+```
+
+## Remove outliers
+
+Based upon the residuals from the above linear model, I identified samples 37 and 132 as potential outliers. Sample 37 is the oldest bear by 25%, and sample 132 is the heaviest bear by nearly 10%. 
+
+There were no other reasons to remove sample 37 other than its abnormal residuals, and so it was kept in the data.
+
+Sample 132 had been measured 10 months earlier, during which they gained 70 pounds while losing chest girth and length. Based on the unlikelihood of increasing weight by 20% while becoming smaller in size, I chose to remove sample 132.
+
+
+```{r}
+bearsRM <- bears[-132,]
+lme3 <- lme(weight ~ chestGSctransf + lengthSctransf + headWSc, 
+            random = ~ 1 |name/age, weights=varExp(form=~as.vector(lengthSctransf)), 
+            data=bearsRM)
+```
+
+## Residuals
+
+```{r}
+resid3 <- resid(lme3)
+residplot3 <- ggplot(data=bearsRM, aes(y=resid3, x=weight))+
+  geom_point(size=1.7)+
+  geom_hline(yintercept=0, color="blue", size=1.25)+
+  theme_bw()
+
+print(residplot3)
+```
+
+## Chest vs. weight - observed vs. predicted
+
+```{r}
+plot1 <- ggplot(data=bearsRM, aes(y=weight, x= chestGSc))+
+  geom_point()+
+  theme_bw()+
+  geom_point(aes(y=lme3$fitted[,1], x=chestGSc), color="blue")
+
+print(plot1)
+
+```
+
+## Fitted vs. actual
+
+```{r}
+fitted3 <- fitted(lme3)
+fittedvsactual <- ggplot(data=bearsRM, aes(y=fitted3, x=weight))+
+  theme_bw()+
+  geom_point(size=2.3)+
+  geom_smooth(method="lm", se=FALSE)
+print(fittedvsactual)
+```
+
+# Generalized least squares
+
+Next, bear weight is modeled by generalized least squares.
+
+Model one has no correlation structure, while models two and three do. Model two includes a dummy variable for whether age was imputed.
+
+```{r}
+
+
+gls1 <- gls(weight ~ chestGSctransf + lengthSctransf + headWSc,
+            weights=varExp(form=~as.vector(lengthSctransf)), data=bearsRM)
+
+gls2 <- gls(weight ~ chestGSctransf + lengthSctransf + headWSc + ageNA,
+            weights=varExp(form=~as.vector(lengthSctransf)),
+            correlation=corCAR1(form = ~ age |name), data=bearsRM)
+
+gls3 <- gls(weight ~ chestGSctransf + lengthSctransf + headWSc,
+            weights=varExp(form=~as.vector(lengthSctransf)),
+            correlation=corCAR1(form = ~age | name), data=bearsRM)
+```
+
+## AIC
+
+AIC suggests that model two (with correlation structure and the imputed dummy variable) is the best thus far.
+
+```{r}
+AIC(gls1, gls2, gls3)
+```
+
+## Residuals
+```{r}
+resid.gls <- resid(gls2)
+residplot.gls <- ggplot(data=bearsRM, aes(y=resid.gls, x=weight))+
+  geom_point(size=1.7)+
+  geom_hline(yintercept=0, color="blue", size=1.25)+
+  theme_bw()
+
+print(residplot.gls)
+```
+
+# Cubic Splines
+
+Up until this point, chest girth and body length have been modeled using x^2 and 1/x transformation, respectively.
+
+In this section, we replace these simple transformations with the cubic splines transformation, which allows for different transformations at different regions of the distribution of x.
+
+## Function
+
+The following equation is  Eq 2.25 in Harrell p. 20
+
+```{r}
+natural.spline.comp<-function(X,t,j) {
+  k<-length(t)
+  pmax(0,X-t[j])^3-pmax(0,X-t[k-1])^3*(t[k]-t[j])/(t[k]-t[k-1])+
+    pmax(0,X-t[k])^3*(t[k-1]-t[j])/(t[k]-t[k-1])
+}
+```
+
+## Chest Girth
+
+### Knots
+
+To select proper knot placement for chest girth, I begin with 0.10, 0.50, and 0.90, and then tweak the placements and choose the placement that results in the lowest AIC score.
+
+```{r, message=FALSE, warning=FALSE}
+attach(bearsRM)
+knots <- quantile(chestGSc, probs=c(0.10,0.50,0.90), na.rm=TRUE) 
+knots_2 <- quantile(chestGSc, probs=c(0.05,0.30,0.90), na.rm=TRUE) 
+knots_3 <- quantile(chestGSc, probs=c(0.07,0.25,0.90), na.rm=TRUE) 
+knots_4 <- quantile(chestGSc, probs=c(0.10,0.35,0.75), na.rm=TRUE) 
+
+splinepoints <- natural.spline.comp(chestGSc, knots, 1)
+splinepoints_2 <- natural.spline.comp(chestGSc, knots_2, 1)
+splinepoints_3 <- natural.spline.comp(chestGSc, knots_3, 1)
+splinepoints_4 <- natural.spline.comp(chestGSc, knots_4, 1)
+```
+
+### Spline point selection
+
+* Model 1 = 0.10, 0.50, 0.90
+* Model 2 = 0.05, 0.30, 0.90
+* Model 3 = 0.07, 0.25, 0.90 << Best
+* Model 4 = 0.10, 0.35, 0.75 
+
+```{r}
+gls_spline1 <- gls(weight ~ chestGSc + lengthSctransf + headWSc + ageNA + splinepoints,
+            weights=varExp(form=~as.vector(lengthSctransf)),
+            correlation=corCAR1(form = ~ age |name), data=bearsRM)
+
+gls_spline2 <- gls(weight ~ chestGSc + lengthSctransf + headWSc + ageNA + splinepoints_2,
+            weights=varExp(form=~as.vector(lengthSctransf)),
+            correlation=corCAR1(form = ~ age |name), data=bearsRM)
+
+gls_spline3 <- gls(weight ~ chestGSc + lengthSctransf + headWSc + ageNA + splinepoints_3,
+            weights=varExp(form=~as.vector(lengthSctransf)),
+            correlation=corCAR1(form = ~ age |name), data=bearsRM)
+
+gls_spline4 <- gls(weight ~ chestGSc + lengthSctransf + headWSc + ageNA + splinepoints_4,
+            weights=varExp(form=~as.vector(lengthSctransf)),
+            correlation=corCAR1(form = ~ age |name), data=bearsRM)
+```
+
+### Spline point AIC
+```{r}
+AIC(gls_spline1 ,gls_spline2 ,gls_spline3 ,gls_spline4)
+```
+
+## Length - spline points
+
+To select proper knot placement for chest girth, I begin with 0.10, 0.50, and 0.90, and then tweak the placements and choose the placement that results in the lowest AIC score.
+
+```{r}
+knots_l_1 <- quantile(lengthSc, probs=c(0.10,0.50,0.90), na.rm=TRUE) 
+knots_l_2 <- quantile(lengthSc, probs=c(0.05,0.30,0.90), na.rm=TRUE) 
+knots_l_3 <- quantile(lengthSc, probs=c(0.07,0.25,0.90), na.rm=TRUE) 
+knots_l_4 <- quantile(lengthSc, probs=c(0.10,0.35,0.75), na.rm=TRUE) 
+
+splinepoints_l_1 <- natural.spline.comp(lengthSc, knots, 1)
+splinepoints_l_2 <- natural.spline.comp(lengthSc, knots_2, 1)
+splinepoints_l_3 <- natural.spline.comp(lengthSc, knots_3, 1)
+splinepoints_l_4 <- natural.spline.comp(lengthSc, knots_4, 1)
+```
+
+* Model 1 = 0.10, 0.50, 0.90
+* Model 2 = 0.05, 0.30, 0.90
+* Model 3 = 0.07, 0.25, 0.90
+* Model 4 = 0.10, 0.35, 0.75 << Best
+
+```{r}
+gls_spline_l_1 <- gls(weight ~ chestGSc + lengthSc + headWSc +
+                     ageNA + splinepoints_3 + splinepoints_l_1,
+            weights=varExp(form=~as.vector(lengthSctransf)),
+            correlation=corCAR1(form = ~ age |name), data=bearsRM)
+
+gls_spline_l_2 <- gls(weight ~ chestGSc + lengthSc + headWSc +
+                     ageNA + splinepoints_3 + splinepoints_l_2,
+            weights=varExp(form=~as.vector(lengthSctransf)),
+            correlation=corCAR1(form = ~ age |name), data=bearsRM)
+
+gls_spline_l_3 <- gls(weight ~ chestGSc + lengthSc + headWSc +
+                     ageNA + splinepoints_3 + splinepoints_l_3,
+            weights=varExp(form=~as.vector(lengthSctransf)),
+            correlation=corCAR1(form = ~ age |name), data=bearsRM)
+
+gls_spline_l_4 <- gls(weight ~ chestGSc + lengthSc + headWSc +
+                     ageNA + splinepoints_3 + splinepoints_l_4,
+            weights=varExp(form=~as.vector(lengthSctransf)),
+            correlation=corCAR1(form = ~ age |name), data=bearsRM)
+```
+
+```{r}
+AIC(gls_spline_l_1, gls_spline_l_2, gls_spline_l_3, gls_spline_l_4)
+```
+
+## Restructure variance
+
+Because the cubic splines transformation resulted in a lower AIC score and better model fit than the x^2 and 1/x transformation, we must revisit the manner in which within-group and between-group heteroskedasticity is being modeled.
+
+Namely, we must consider that modeling this variance with a cubic splines transformation may also be better than modeling it with the x^2 or 1/x transformation.
+
+To test for this, we build four potential models.
+
+* Option 1 = model based upon splinepoints for chest girth
+* Option 2 = model based upon splinepoints for length
+* Option 3 = model based upon chest girth plus its splinepoints
+* Option 4 = model based upon length plus its splinepoints
+
+```{r}
+gls_spline_opt1 <- gls(weight ~ chestGSc + lengthSc + headWSc +
+                     ageNA + splinepoints_3 + splinepoints_l_4,
+            weights=varExp(form=~as.vector(splinepoints_3)),
+            correlation=corCAR1(form = ~ age | name), data=bearsRM)
+
+gls_spline_opt2 <- gls(weight ~ chestGSc + lengthSc + headWSc +
+                     ageNA + splinepoints_3 + splinepoints_l_4,
+            weights=varExp(form=~as.vector(splinepoints_l_4)),
+            correlation=corCAR1(form = ~ age | name), data=bearsRM)
+
+gls_spline_opt3 <- gls(weight ~ chestGSc + lengthSc + headWSc +
+                     ageNA + splinepoints_3 + splinepoints_l_4,
+            weights=varExp(form=~as.vector(chestGSc + splinepoints_3)),
+            correlation=corCAR1(form = ~ age | name), data=bearsRM)
+
+gls_spline_opt4 <- gls(weight ~ chestGSc + lengthSc + headWSc +
+                     ageNA + splinepoints_3 + splinepoints_l_3,
+            weights=varExp(form=~as.vector(lengthSc + splinepoints_l_3)),
+            correlation=corCAR1(form = ~ age | name), data=bearsRM)
+
+AIC(gls_spline_opt1, gls_spline_opt2, gls_spline_opt3, gls_spline_opt4)
+
+gls_spline <- gls_spline_opt3
+```
+
+# Restructure LME
+
+Because the cubic splines transformation improved the model fit of the GLS so much, this section revisits the LME and applies the same cubic splines transformation to the best-fit LME model from above.
+
+```{r, message=FALSE, warning=FALSE}
+lme_final <- lme(weight ~ chestGSc + lengthSc + headWSc +
+                     ageNA + splinepoints_3 + splinepoints_l_4, 
+            random = ~ 1 |name/age,
+            weights=varExp(form=~as.vector(chestGSc + splinepoints_3)),
+            correlation=corCAR1(form = ~ age | name), data=bearsRM)
+            
+```
+
+# Comparison of models
+
+## AIC
+```{r}
+cat(" AIC LM         ", round(AIC(lm1),2),
+    "\n", "AIC GLS        ", round(AIC(gls2),2), "\n",
+    "AIC GLS spline ", round(AIC(gls_spline), 2), "\n",
+    "AIC LME spline ", round(AIC(lme_final),2),
+    "\n")
+```
+
+## Residuals
+```{r}
+resid_lm <- resid(lm1)
+resid_gls_spline <- resid(gls_spline)
+resid_gls <- resid(gls2)
+resid_lme <- resid(lme_final)
+
+residplot_lm <- ggplot(data=bears, aes(y=resid_lm, x=weight))+
+  geom_point()+
+  geom_hline(yintercept=0, color="blue")+
+  theme_bw()+
+  ggtitle("Linear model")
+
+residplot_gls_spline <- ggplot(data=bearsRM, aes(y=resid_gls_spline, x=weight))+
+  geom_point()+
+  geom_hline(yintercept=0, color="blue")+
+  theme_bw()+
+  ggtitle("GLS - cubic splines")
+
+residplot_gls <- ggplot(data=bearsRM, aes(y=resid_gls, x=weight))+
+  geom_point()+
+  geom_hline(yintercept=0, color="blue")+
+  theme_bw()+
+  ggtitle("GLS")
+
+residplot_lme <- ggplot(data=bearsRM, aes(y=resid_lme, x=weight))+
+  geom_point()+
+  geom_hline(yintercept=0, color="blue")+
+  theme_bw()+
+  ggtitle("LME - spline")
+
+multiplot(residplot_lm, residplot_gls_spline, residplot_gls, residplot_lme, cols=2)
+
+```
+
+## Predicted vs observed
+
+```{r}
+fitted_lm <- fitted(lm1)
+fitted_gls_spline <- fitted(gls_spline)
+fitted_gls <- fitted(gls2)
+fitted_lme <- fitted(lme_final)
+
+fitted_plot_lm <- ggplot(data=bears, aes(y=fitted_lm, x=weight))+
+  theme_bw()+
+  geom_point(size=1.7)+
+  geom_smooth(method="lm", se=FALSE)+
+  xlab("")+
+  ylab("Fitted weight")+
+  ggtitle("Linear model")+
+  theme(panel.grid.minor=element_blank())
+
+fitted_plot_gls_spline <- ggplot(data=bearsRM, aes(y=fitted_gls_spline, x=weight))+
+  theme_bw()+
+  geom_point(size=1.7)+
+  geom_smooth(method="lm", se=FALSE)+
+  ggtitle("GLS - spline")+
+  xlab("Observed weight")+
+  ylab("Fitted weight")+
+  theme(panel.grid.minor=element_blank())
+
+fitted_plot_gls <- ggplot(data=bearsRM, aes(y=fitted_gls, x=weight))+
+  theme_bw()+
+  geom_point(size=1.7)+
+  geom_smooth(method="lm", se=FALSE)+
+  ggtitle("GLS")+
+  xlab("")+
+  ylab("")+
+  theme(panel.grid.minor=element_blank())
+
+fitted_plot_lme <- ggplot(data=bearsRM, aes(y=fitted_lme, x=weight))+
+  theme_bw()+
+  geom_point(size=1.7)+
+  geom_smooth(method="lm", se=FALSE)+
+  ggtitle("LME - spline")+
+  ylab("")+
+  xlab("Observed weight")+
+  theme(panel.grid.minor=element_blank())
+
+multiplot(fitted_plot_lm, fitted_plot_gls_spline, fitted_plot_gls, fitted_plot_lme, cols=2)
+
+```
+
+## Residual sum of squares
+
+```{r}
+RSS_lm <- sum(resid(lm1)^2)
+RSS_gls <- sum(resid(gls2)^2)
+RSS_gls_spline <- sum(resid(gls_spline)^2)
+RSS_lme_spline <- sum(resid(lme_final)^2)
+
+cat(" RSS LM         ", round(RSS_lm,2),
+    "\n", "RSS GLS        ", round(RSS_gls,2), "\n",
+    "RSS GLS spline ", round(RSS_gls_spline, 2), "\n",
+    "RSQ LME spline ", round(RSS_lme_spline,2),
+    "\n")
+
+
+```
+
+# Final model 
+
+The linear mixed effects model is chosen to be the best model for bear weight based upon its low AIC score and low residual sum of squares. 
+
+```{r, eval=FALSE}
+
+lme(weight ~ chestGSc + lengthSc + headWSc + ageNA + 
+      splinepoints_chest + splinepoints_length, 
+            random = ~ 1 | name/age,
+            weights=varExp(form=~as.vector(chestGSc + splinepoints_chest)),
+            correlation=corCAR1(form = ~ age | name))
+```
+
+```{r}
+AIC(lme_final)
+(RSS_lme_spline <- sum(resid(lme_final)^2))
+```
+
+```{r}
+fitted_plot_lme <- ggplot(data=bearsRM, aes(y=fitted_lme, x=weight))+
+  theme_bw()+
+  geom_point(size=2.3)+
+  geom_smooth(method="lm", se=FALSE)+
+  ggtitle("Fitted vs observed")
+
+residplot_lme <- ggplot(data=bearsRM, aes(y=resid_lme, x=weight))+
+  geom_point()+
+  geom_hline(yintercept=0, color="blue")+
+  theme_bw()+
+  ggtitle("Residuals")
+
+multiplot(residplot_lme, fitted_plot_lme)
+```
+
+```{r}
+summary(lme_final)
+```

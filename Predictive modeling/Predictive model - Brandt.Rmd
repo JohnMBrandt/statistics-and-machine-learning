@@ -1,0 +1,513 @@
+---
+title: "Homework 1"
+subtitle: "Applied Data Mining and Machine Learning"
+author: "John Brandt"
+date: "January 30, 2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment=NA)
+require(ggplot2)
+require(FNN)
+require(Rmisc)
+
+```
+## Conceptual Questions
+
+## Number 1
+
+$$ MSE = E[(\hat f - f)^2]=bias(\hat f)^2 + var(\hat f)$$
+$$ MSE = E[(\hat f - E[\hat f] + E[\hat f] - f)^2]$$
+$$ MSE = E[((\hat f - E(\hat f))^2 + 2(\hat f - E[\hat f])(E[f]-f) + (E[f] -\hat f)^2$$
+$$MSE = E[(\hat f - E[\hat f])^2] + E[(\hat f - E[\hat f])*2(E[\hat f) - f)] + (E[f]-\hat f)^2)$$
+$$ MSE = E[(\hat f - E[\hat f])^2] + (E[(f)-\hat f)^2$$
+
+
+## Number 2
+
+$$
+f(v) = \frac{1}{\sqrt{| 2\pi\Sigma|}} \exp \Bigl(- \frac{1}{2}(v - \mu)^t \Sigma^{-1} (v - \mu)\Bigr).
+$$
+$$Y \sim N(x \beta, \sigma^2 I_n)$$
+$$V ~ \sim N(\mu, \Sigma)$$
+$$
+f(v) = \frac{1}{\sqrt{| 2\pi\sigma^2|}} \exp \Bigl(- \frac{1}{2 \sigma^2}(Y-\beta x)^2\Bigr).
+$$
+$$
+ln\Bigl(\frac{1}{\sqrt{2 \pi \sigma^2}}\Bigr) - \frac{1}{2 \sigma^2} \Bigl(Y-\beta x \Bigr)^2
+$$
+
+$$
+\frac{\partial v}{\partial \beta} = \frac{1}{\sigma ^2}\Bigl(x(y-\hat \beta x)\Bigr) = 0
+$$
+$$
+x(y-\hat \beta x) = 0
+$$
+
+$$
+xy - \hat \beta x^2 = 0
+$$
+
+$$
+\hat \beta x^2 = xy
+$$
+
+$$
+\hat \beta = \frac{xy}{x^2}
+$$
+
+$$
+\hat \beta = \frac{\Sigma(x_i-\bar x)(y_i - \bar y)}{\Sigma (x_i - \bar x)^2}
+$$
+\newpage 
+   
+   
+
+
+## Load in data 
+```{r}
+main <- read.csv("citibike_main.csv")
+weather <- read.csv("weather.csv")
+```
+
+## a) Data pre-Processing
+
+Merge dataframes and convert relevant columns to factors.
+
+```{r}
+main <- merge(main, weather)
+main$holiday <- factor(main$holiday)
+main$month <- factor(main$month)
+main$dayofweek <- factor(main$dayofweek)
+```
+
+## b) Splitting the dataset for training/validation
+
+Use random number generator to split data frame into 80% training and 20% test sets.
+
+```{r}
+set.seed(123)
+
+s <- sample(1:nrow(main), nrow(main)/5, replace=FALSE)
+test <- main[s,]
+train <- main[-s,]
+```
+
+Tmax and Tmin are highly colinear (r=0.97). Tmax will be considered instead of Tmin because of its slightly higher correlation (0.76 vs. 0.74) with trips.
+
+```{r}
+round(cor(train[,-c(1,4,5,6)]),2)
+```
+
+Plots of categorical variables show that holiday, month, and day of week likely are all important predictors of trips. There are less trips on holidays, more trips during the summer, and less trips on tuesday/wednesdays.
+
+```{r}
+plot(train[,-c(1,4,5,6,13)])
+```
+
+Correlation plots between numerical variables indicate that data transformation is not necessary.
+
+```{r}
+plot(train[,c(2,4,5,6)])
+```
+
+# c) Linear Regression 
+
+## Model with all predictors
+
+```{r}
+lm_all <- lm(trips ~ dayofweek + TMIN + month + n_stations + holiday +
+               PRCP + SNWD + SNOW + TMAX + AWND, data=train)
+summary(lm_all)
+```
+
+## Model with 5 predictors
+
+Because only saturday and sunday were significant in the intial regression, I bin the day of week into weekend/non-weekend.
+
+```{r}
+test$weekend <- 0
+test$weekend[test$dayofweek %in% c("Sat","Sun")] <- 1
+test$weekend <- factor(test$weekend)
+train$weekend <- 0
+train$weekend[train$dayofweek %in% c("Sat","Sun")] <- 1
+train$weekend <- factor(train$weekend)
+```
+
+### Removing variables
+
+Month is removed, because people likely bike less during the winter because of temperature and snow depth, and not something inherent to what portion of the year it is.
+
+Tmin is removed because of the colinearity with Tmax.
+
+This results in the following model with 8 predictors:
+
+```{r}
+lm_8_predictors <- lm(trips ~ weekend + n_stations + holiday + PRCP +
+                        SNWD + SNOW + TMAX + AWND, data = train)
+
+summary(lm_8_predictors)
+```
+
+Snow is removed from the model because the correlation plots suggest it is already modeled by the combination of temperature and precipitation.
+
+Wind direction is removed from the model because it is only marginally significant. Based upon t-values and standard error, snow depth is also removed from the model in order to bring the number of predictors to 5, creating the following model: 
+
+$$ trips = weekend + n\_stations + holiday + precipitation + max\_temperature $$
+
+```{r}
+lm_5_predictors <- lm(trips ~ weekend + n_stations + holiday + PRCP + TMAX, data = train)
+summary(lm_5_predictors)
+lm_5 <- lm_5_predictors
+```
+
+
+## 4 Predictor model
+
+Iteratively removing one predictor at a time, and using the AIC to test for model fit, indicates that removing the "holiday" variable results in the best-fit 4 predictor model as follows:
+
+  
+$$ trips = weekend + n\_stations + precipitation + max\_temperature $$
+
+```{r}
+lm_4_predictors_opt_1 <- lm(trips ~ weekend + n_stations + holiday + PRCP, data = train)
+lm_4_predictors_opt_2 <- lm(trips ~ weekend + n_stations + PRCP, data = train)
+lm_4_predictors_opt_3 <- lm(trips ~ weekend + n_stations + PRCP + TMAX, data = train)
+lm_4_predictors_opt_4 <- lm(trips ~ weekend + holiday + PRCP + TMAX, data =train)
+lm_4_predictors_opt_5 <- lm(trips ~ n_stations + holiday + PRCP + TMAX, data =train)
+
+AIC(lm_4_predictors_opt_1, lm_4_predictors_opt_2, lm_4_predictors_opt_3, 
+    lm_4_predictors_opt_4, lm_4_predictors_opt_5)
+lm_4 <- lm_4_predictors_opt_3
+```
+
+## 3 Predictor model
+
+As before, iteratively remove one predictor at a time, and train for model fit with AIC. Doing so suggests that removing the weekend variable results in the best 3-predictor model as follows:
+
+$$ trips = n\_stations + precipitation + max temperature $$
+
+
+```{r}
+lm_3_predictors_opt_1 <- lm(trips ~ weekend + n_stations + PRCP, data = train)
+lm_3_predictors_opt_2 <- lm(trips ~ weekend + n_stations + TMAX, data = train)
+lm_3_predictors_opt_3 <- lm(trips ~ weekend + PRCP + TMAX, data = train)
+lm_3_predictors_opt_4 <- lm(trips ~ n_stations + PRCP + TMAX, data = train)
+
+AIC(lm_3_predictors_opt_1, lm_3_predictors_opt_2,
+    lm_3_predictors_opt_3, lm_3_predictors_opt_4)
+
+lm_3 <- lm_3_predictors_opt_4
+
+```
+
+## 2 Predictor model
+
+Best two predictor model, determined by iterative removal and AIC is:
+
+$$ trips = n\_stations + max\_temperature $$
+
+```{r}
+lm_2_predictors_opt_1 <- lm(trips ~ n_stations + PRCP, data = train)
+lm_2_predictors_opt_2 <- lm(trips ~ PRCP + TMAX, data = train)
+lm_2_predictors_opt_3 <- lm(trips ~ n_stations + TMAX, data = train)
+
+AIC(lm_2_predictors_opt_1, lm_2_predictors_opt_2, lm_2_predictors_opt_3)
+
+lm_2 <- lm_2_predictors_opt_3
+```
+
+
+## 1 Predictor model
+The best one predictor model, determined by iterative removal and AIC is:
+
+$$ trips = \beta_1 \space max\_temperature +\epsilon$$
+```{r}
+lm_1_predictor_opt_1 <- lm(trips ~ n_stations, data=train)
+lm_1_predictor_opt_2 <- lm(trips ~ TMAX, data = train)
+AIC(lm_1_predictor_opt_1, lm_1_predictor_opt_2)
+
+lm_1 <- lm_1_predictor_opt_2
+```
+
+# Testing model on test data set
+
+In order to validate the model, I use the predict function to run the model fit on a previously established smaller subset of the data. 
+
+```{r}
+lm_all_test <- predict(lm_all, newdata=test)
+lm_5_test <- predict(lm_5, newdata=test)
+lm_4_test <- predict(lm_4, newdata=test)
+lm_3_test <- predict(lm_3, newdata=test)
+lm_2_test <- predict(lm_2, newdata=test)
+lm_1_test <- predict(lm_2, newdata=test)
+
+```
+
+## Model comparison
+
+### Extract R-squared
+
+### Training models
+```{r}
+lm_all_r2 <- summary(lm_all)$r.squared
+lm_5_r2 <- summary(lm_5)$r.squared
+lm_4_r2 <- summary(lm_4)$r.squared
+lm_3_r2 <- summary(lm_3)$r.squared
+lm_2_r2 <- summary(lm_2)$r.squared
+lm_1_r2 <- summary(lm_1)$r.squared
+```
+
+### Test models
+In order to extract R2 from the test models, I construct a function that calculates
+
+$$R^2 = 1 - (SSresidual / SS total) $$
+```{r}
+R2 <- function(model, data) {
+  SS.total <- sum((data$trips - mean(data$trips))^2)
+  SS.residual <- sum((data$trips - model)^2)
+  r.sq <- 1 - SS.residual/SS.total
+}
+
+lm_all_r2_t <- R2(lm_all_test, test)
+lm_5_r2_t <- R2(lm_5_test, test)
+lm_4_r2_t <- R2(lm_4_test, test)
+lm_3_r2_t <- R2(lm_3_test, test)
+lm_2_r2_t <- R2(lm_2_test, test)
+lm_1_r2_t <- R2(lm_1_test, test)
+
+rsquared <- c(lm_all_r2, lm_5_r2, lm_4_r2, lm_3_r2, lm_2_r2, 
+              lm_1_r2, lm_all_r2_t, lm_5_r2_t, lm_4_r2_t, lm_3_r2_t, lm_2_r2_t, lm_1_r2_t)
+names <- c('all', '5', '4', '3', '2', '1', 'all', '5', 
+           '4', '3', '2', '1')
+
+```
+
+## Extract Mean Squared Error
+
+```{r}
+# Train model mean squared error = mean of residuals squared
+mse <- function(model) {
+  mean(model$residuals^2)
+}
+
+# Test model mean squared errors = mean of residuals squared
+msetest <- function(model, data) {
+  mean((data$trips - model)^2)
+}
+
+mse_all <- mse(lm_all)
+mse_5 <- mse(lm_5)
+mse_4 <- mse(lm_4)
+mse_3 <- mse(lm_3)
+mse_2 <- mse(lm_2)
+mse_1 <- mse(lm_1)
+
+
+mse_all_t <- msetest(lm_all_test, test)
+mse_5_t <- msetest(lm_5_test, test)
+mse_4_t <- msetest(lm_4_test, test)
+mse_3_t <- msetest(lm_3_test, test)
+mse_2_t <- msetest(lm_2_test, test)
+mse_1_t <- msetest(lm_1_test, test)
+
+mse_list <- c(mse_all, mse_5, mse_4, mse_3, mse_2, mse_1, mse_all_t, 
+              mse_5_t, mse_4_t, mse_3_t, mse_2_t, mse_1_t)
+
+```
+
+
+## Bind MSE, Rsquared, predictors, and category to a dataframe
+```{r}
+summary_table <- data.frame(cbind(do.call('rbind', strsplit(names, " ")),
+                                  round(rsquared,2)))
+
+summary_table$mse <- mse_list
+summary_table$category <- "test"
+summary_table[7:12,4] <- "train"
+
+colnames(summary_table) <- c("predictor", "rsquared", "mse", "category")
+summary_table$predictor <- factor(summary_table$predictor)
+```
+
+## Plot R-squared and MSE of test and train fit
+
+```{r}
+model_plot <- ggplot(aes(x=predictor, y=rsquared), data=summary_table)+
+  geom_bar(aes(fill=category), stat="identity", position="dodge")+
+  theme_bw()
+
+mse_plot <- ggplot(aes(x=predictor, y=mse), data=summary_table)+
+  geom_bar(aes(fill=category), stat="identity", position="dodge")+
+  theme_bw()
+
+multiplot(model_plot, mse_plot, cols=1)
+```
+
+# d) K-nearest neighbors regression
+
+## i) Scale variables and set seed
+```{r}
+# Remove categorical data variables
+test_scale <- test
+num.vars <- sapply(test_scale, is.numeric)
+
+test_scale[num.vars] <- lapply(test_scale[num.vars], scale)
+
+# Scale variables
+test_scale <- test_scale[, num.vars]
+
+# Do the same for training set
+train_scale <- train
+num.vars <- sapply(train_scale, is.numeric)
+
+train_scale[num.vars] <- lapply(train_scale[num.vars], scale)
+train_scale <- train_scale[, num.vars]
+
+# Set seed for reproducability
+set.seed(123)
+```
+
+
+## ii) Train-set k-nearest neighbors regression from k = 1:50
+
+Apparently, you're not supposed to include your response variable in the input dataframe to the knn.reg function, so I subset the columns that are not "trips" in the input, and specify the trips as the y-response. This generates different results than does keeping trips in the KNN function, but it makes more sense not to model trips based upon trips.
+
+
+```{r}
+knn_df <- as.data.frame(matrix(0, 50, 3))
+
+
+# No matter what I did (and I tried for 2 hours!) I could not get knn.reg to work when i=2,
+# so I only was able to run the models from 3:50
+
+for (i in 3:50) {
+  model <- knn.reg(train_scale[,-1], y=train_scale$trips, k=i) # remove 'trips' from input
+  knn_df[i,1] <- "train"
+  knn_df[i,2] <- round(mse(model), 4)
+  knn_df[i,3] <- i
+}
+colnames(knn_df) <- c("category", "mse", "k")
+
+knn_df_test <- as.data.frame(matrix(0, 50, 3))
+```
+
+## Test-set k-nearest neighbors regression from k = 1:50
+
+```{r}
+
+for (i in 3:50) {
+  model <- knn.reg(train_scale[,-1], test=test_scale[,-1], y=train_scale$trips, k=i)
+  knn_df_test[i,1] <- "test"
+  knn_df_test[i,2] <- round(mean(abs(model$pred - test_scale$trips)^2), 4)
+  knn_df_test[i,3] <- i
+}
+```
+
+## Plot of MSE for train and test k-nearest neighbors regression
+```{r]}
+colnames(knn_df_test) <- c("category", "mse", "k")
+knn_df <- rbind(knn_df, knn_df_test)
+
+knn_plot <- ggplot(data = knn_df, aes(x=k, y=mse))+
+  geom_point(aes(color=category))+
+  geom_line(aes(color=category))+
+  theme_bw()
+
+print(knn_plot)
+```
+
+# e) Predictions for test set
+
+Of the 6 models specified by this problem set, I choose the model with 5 predictors to be the best linear model. This model does not have the autocorrelation issue between Tmin and Tmax, while still having nearly as good of test/training R-squared and MSE as does the model with all predictors.
+
+
+$$ trips = weekend + n\_stations + holiday + precipitation + max\_temperature $$
+
+The K-nearest neighbors regression with K = 16 was chosen as the best KNN model, because it is the point where the average of the test and train MSE is the smallest, indicating that the model is adequately balancing variance and bias.
+
+## Reading in final test dataset
+
+```{r}
+final_test <- read.csv("citibike_test.csv")
+final_test <- merge(final_test, weather)
+final_test$holiday <- factor(final_test$holiday)
+final_test$month <- factor(final_test$month)
+final_test$dayofweek <- factor(final_test$dayofweek)
+
+final_test$weekend <- 0
+final_test$weekend[final_test$dayofweek %in% c("Sat","Sun")] <- 1
+final_test$weekend <- factor(final_test$weekend)
+```
+
+## Linear model predictions
+
+```{r}
+lm_5_prediction <- predict(lm_5, newdata=final_test)
+```
+
+
+```{r}
+final_test_scale <- final_test
+num.vars_final <- sapply(final_test_scale, is.numeric)
+
+final_test_scale[num.vars_final] <- lapply(final_test_scale[num.vars_final], scale)
+final_test_scale <- final_test_scale[, num.vars_final]
+
+# This creates an error where snow and snowdepth are set to NaN because they cannot
+# be scaled because all data is 0 for the prediction set.
+# To deal with this, I reset these columns to 0.
+
+final_test_scale$SNWD = 0
+final_test_scale$SNOW = 0
+
+
+knn_prediction <- knn.reg(train_scale[,-1], test=final_test_scale,
+                          y=train_scale$trips, k=16)
+
+```
+
+### Descale the trips predicted data and write to dataframe
+
+
+```{r}
+final_predictions <- as.data.frame(matrix(0, 183, 3))
+colnames(final_predictions) <- c("date", "trips_lm", "trips_knn")
+```
+
+To convert the KNN prediction from scaled trips to trips, I assume that the $\mu$ and $\sigma$ of the predicted trips is equal to the $\mu$ and $\sigma$ of the training data set.
+
+```{r}
+knn_prediction_descaled <- round((knn_prediction$pred*sd(train$trips))+
+                                   mean(train$trips),0)
+final_predictions$trips_knn <- knn_prediction_descaled
+final_predictions$date <- final_test$date
+final_predictions$trips_lm <- round(lm_5_prediction, 0)
+
+```
+
+### Write CSV
+
+
+```{r}
+write.csv(final_predictions, file='final_predictions.csv', row.names=FALSE)
+```
+
+```{r}
+finalplots <- ggplot(data=final_predictions, aes(y=trips_knn, x=trips_lm))+
+    geom_point()+
+    geom_smooth(method="lm", se=FALSE)+
+    theme_bw()+
+    geom_abline(slope=1)+
+  ylab("Predicted trips (KNN)")+
+  xlab("Predicted trips (LM)")+
+  theme(panel.grid.minor=element_blank())+
+  ggtitle("KNN underpredicts trips relative to LM")
+
+print(finalplots)
+```
+
+
