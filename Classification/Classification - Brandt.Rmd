@@ -1,0 +1,358 @@
+---
+title: "Homework 2"
+subtitle: "Logistic regression, linear discriminant analysis, and KNN classification"
+author: "John Brandt"
+date: "2/10/2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(dplyr)
+require(MASS)
+require(FNN)
+options(scipen=10)
+```
+
+
+# Conceptual questions
+
+## Question 1
+
+$$R(f) = E[I(Y\ne h(X)) | X = x]$$
+$$h(x) = \arg\max_{c\in\{1,\dots,K\}} \hspace{2mm} P(y=c|X=x)$$ 
+
+$h(x)$ minimizes $R(f)$ because it maximizes the chance that $y\in\{1,\dots,K\}$
+
+$$E[I(y \ne \arg\max_{c\in\{1,\dots,K\}} P(y=c | X=x)]$$
+$R(f)$ is minimized when $P(y\ne h(x))$ is maximized where $h(x)$ is some classifier. If $h(x)=arg max_c \hspace{2mm} P(y=c|X=x)$, then $R(f)$ is minimized because the expected value of $Y \ne c$, one of the classifiers, given the $argmax P(y=c | X = x)$ is zero.
+
+
+
+## Question 2
+
+```{r}
+flowers <- iris
+flowers$setosa <- 0
+flowers$setosa[flowers$Species == "setosa"] <- 1
+```
+
+### a)
+
+```{r}
+flowers_m1 <- glm(setosa ~ Petal.Length, data = flowers, family = binomial)
+```
+
+### b)
+
+```{r}
+coef(flowers_m1)
+```
+
+```{r}
+
+tmp <- data.frame(Petal.Length=seq(min(flowers$Petal.Length),
+                                   max(flowers$Petal.Length), by = 0.1))
+pred <- predict(flowers_m1, newdata=tmp, type="response")
+
+
+predict_prob <- function(multiplier){
+  odds <- exp((coef(flowers_m1)[1]*multiplier) + (coef(flowers_m1)[2]*multiplier*tmp))
+  prob <- odds / (1 + odds)
+  return(prob)
+}
+
+predict_0.25 <- predict_prob(0.25)
+predict_0.5 <- predict_prob(0.5)
+predict_1 <- predict_prob(1)
+predict_2 <- predict_prob(2)
+
+plot(setosa ~ Petal.Length, data = flowers)
+lines(tmp$Petal.Length, predict_0.25$Petal.Length, lwd=2, col = "blue")
+lines(tmp$Petal.Length, predict_0.5$Petal.Length, lwd=2, col="red")
+lines(tmp$Petal.Length, predict_1$Petal.Length, lwd=2, col="green")
+lines(tmp$Petal.Length, predict_2$Petal.Length, lwd=2, col="purple")
+legend(6.2,1, c("0.25", "0.5", "1", "2"), fill = c("blue", "red", "green", "purple"))
+```
+
+As $\beta_c$ increases in size, the decision boundary becomes more linear and vertical, likely increasing the seperability of any test dataset.
+
+### c)
+
+As $\beta_c$ increases from 0.25 to 1, the log likelihood approaches but does not reach zero, thus failing to converge before identifying the $\beta_0$ and $\beta_1$
+
+To derive a simpler equation for log likelihood, I apply log rules to the likelihood equation, and then construct the matrix algebra in R.
+
+$$L(\beta) = \prod_{i=1}^n L_i(\beta) =\prod_{i=1}^n \left(\frac{e^{x_i^t \beta}}{1+e^{x_i^t \beta}}\right)^{y_i}\cdot \left(\frac{1}{1+e^{x_i^t \beta}}\right)^{1-y_i}$$
+$$
+log\Bigl(L(\beta)\Bigl) = \sum_{i=1}^n y_i \Bigl[log\Bigl(e^{x_i^t\beta}\Bigr) - log\Bigl(1 + e^{x_i^t\beta}\Bigl)\Bigr] + (1-y_i)log\Bigl(\frac{1}{1+e^{x_i^t \beta}}\Bigr)
+$$
+
+$$
+log\Bigl(L(\beta)\Bigl) = \sum_{i=1}^n \Bigl[y_i x_i^t \beta - y_i log\Bigl(1 + e^{x_i^t\beta}\Bigr) - (1 - y_i) log\Bigl(1 + e^{x_i^t\beta}\Bigr) \Bigl]
+$$
+
+
+$$
+log\Bigl(L(\beta)\Bigl) = \sum_{i=1}^n y_i x_i^t \beta - log\Bigl(1+e^{x_i^t\beta}\Bigr)
+$$
+
+```{r}
+betas0.25 <- c(coef(flowers_m1)[1]*0.25, coef(flowers_m1)[2]*0.25)
+betas0.5 <- c(coef(flowers_m1)[1]*0.5, coef(flowers_m1)[2]*0.5)
+betas1 <- c(coef(flowers_m1)[1], coef(flowers_m1)[2])
+betas2 <- c(coef(flowers_m1)[1]*2, coef(flowers_m1)[2]*2)
+
+#yi <- flowers$setosa
+#xi <- flowers$Petal.Length
+
+likelihood <- rep(NA, 150)
+
+loglik <- function(input) {
+  betas_matrix <<- matrix(data = input, nrow = 2, ncol = 1)
+  for (i in 1:150) {
+      xi_transp <- matrix(data = c(as.numeric(1),
+                   as.numeric(flowers$Petal.Length[i])), nrow = 1, ncol = 2)
+      xi_beta <- xi_transp %*% betas_matrix
+      likelihood[i] <<- (flowers$setosa[i] * xi_beta) - log(1 + exp(xi_beta))
+  }
+  return(sum(likelihood))
+}
+
+loglik(betas0.25)
+loglik(betas0.5)
+loglik(betas1)
+loglik(betas2)
+```
+
+d) The maximum likelihood parameter estimates become infinite when classes are linearly seperable. This essentially means that in the estimate $\frac{e^{\beta x}}{1+e^{\beta x}}$, any increase of $\beta$ will improve the likelihood. So, $\frac{e^{10x}}{1+e^{10x}} \sim 0.999$ vs. $\frac{e^{\inf x}}{1+e^{\inf x}} \sim \overline{0.999}$
+
+
+
+# Applied Problem: Spam
+
+# Data pre-processing
+```{r}
+data <- read.csv("spam.csv")
+```
+
+### Correct column names
+
+```{r}
+colnames(data)[colnames(data) == "char_freq_."] <-"char_freq_semicolon"
+colnames(data)[colnames(data) == "char_freq_..1"] <-"char_freq_l_parens"
+colnames(data)[colnames(data) == "char_freq_..2"] <-"char_freq_sl_brac"
+colnames(data)[colnames(data) == "char_freq_..3"] <-"char_freq_exclam"
+colnames(data)[colnames(data) == "char_freq_..4"] <-"char_freq_dol_sign"
+colnames(data)[colnames(data) == "char_freq_..5"] <-"char_freq_hashtag"
+```
+
+## Variables expected to be highly associated with spam
+
+In order to determine which predictors to include in the spam classifier, I decided to simply consider which predictors were more likely to be associated with spam and with not-spam. To do so, I calculate a ratio between the average value of each predictor for spam and for not-spam.
+
+For instance, a ratio of 165 means that the predictor was 165 times more common in spam e-mails than in non-spam e-mails. A ratio of 0.002 means that the predictor was 500 times more common in non-spam e-mails than in spam-emails.
+
+```{r}
+# Group by spam column and calculate means for each predictor
+data_means <- data %>%
+  group_by(spam) %>%
+  summarise_all(funs(mean))
+
+# Create a dataframe that has columns "variable" and the average values 
+# for "not spam" and "spam"
+data_means <- as.data.frame(t(data_means[,-1]))
+data_means <- round(data_means, 3)
+data_means <- tibble::rownames_to_column(data_means, "variable")
+colnames(data_means) <- c("variable", "not_spam", "spam")
+
+# Calculate the ratio between the average spam and not spam values
+ratio <- round((data_means$spam/data_means$not_spam), 3)
+data_means$ratio <- ratio
+
+# Arrange columns by descending ratio and print the top 5 words associated with spam 
+# and the bottom 5 words associated with spam
+data_means <- data_means %>%
+  arrange(desc(ratio))
+
+print(data_means[c(1:5,53:58),c(1,4)])
+
+```
+
+## Test and train dataset
+
+I create 80% train and 20% test subsets for model validation.
+
+```{r}
+set.seed(123)
+
+s <- sample(1:nrow(data), nrow(data)/5, replace=FALSE)
+test <- data[s,]
+train <- data[-s,]
+```
+
+# Logistic regression
+
+The model formula was determined by starting with the predictors most and least associated with spam, and iteratively adding one more predictor until the addition of a new predictor did not decrease the residual deviance by more than 2%.
+
+```{r}
+m3 <- glm(spam ~ word_freq_3d + word_freq_000 + word_freq_remove + word_freq_credit + 
+            capital_run_length_longest + char_freq_dol_sign + word_freq_money + 
+            word_freq_free + word_freq_george + word_freq_lab + word_freq_meeting + 
+            word_freq_telnet + word_freq_project + word_freq_edu + word_freq_hp + 
+            char_freq_exclam, data=train, family=binomial)
+```
+
+```{r}
+summary(m3)
+```
+
+### GLM - training error
+
+```{r}
+# confusion matrix
+table(fitted=(fitted(m3) >=0.5)*1, actual=train$spam)
+
+#training error rate
+round(mean((fitted(m3) >= 0.5)*1 != train$spam),3)
+```
+
+### GLM - test error
+```{r}
+# predict GLM
+glm_predict <- predict(m3, newdata = test)
+
+# conusion matrix
+table(fitted = (glm_predict >=0.5), actual=test$spam)
+
+# test error rate
+round(mean((glm_predict >0.5) != test$spam),3)
+
+```
+
+# LDA
+
+The LDA uses the same predictors as the GLM.
+
+```{r}
+lda1 <- lda(spam ~ word_freq_3d + word_freq_000 + word_freq_remove + word_freq_credit + 
+              capital_run_length_longest + char_freq_dol_sign + word_freq_money + 
+              word_freq_free + word_freq_george + word_freq_lab +
+              word_freq_meeting + word_freq_telnet + word_freq_project + 
+              word_freq_edu + word_freq_hp + char_freq_exclam, data=train)
+```
+
+```{r}
+lda1_pred <- predict(lda1)$class
+```
+
+### Training error rate
+
+```{r}
+# Confusion matrix
+table(LDA_predicted=lda1_pred, actual=train$spam)
+
+# Training error rate
+round(mean(lda1_pred != train$spam),3)
+```
+
+### Test error rate
+
+```{r}
+lda_test <- predict(lda1, newdata = test)$class
+
+# confusion matrix
+table(lda_test, test$spam)
+
+round(mean(lda_test != test$spam), 3)
+```
+
+
+# KNN
+
+The KNN uses the same predictors as the LDA and GLM models.
+
+```{r}
+train = train[,1:58]
+
+train_knn <- subset(train, select=c("word_freq_3d", "word_freq_000", "word_freq_remove", 
+                              "word_freq_credit", "capital_run_length_longest", 
+                              "char_freq_dol_sign", "word_freq_money", "word_freq_free",
+                              "word_freq_george", "word_freq_lab", "word_freq_meeting", 
+                              "word_freq_telnet", "word_freq_project", "word_freq_edu",
+                              "word_freq_hp", "char_freq_exclam"))
+
+test_knn <- subset(test, select=c("word_freq_3d", "word_freq_000", "word_freq_remove", 
+                              "word_freq_credit", "capital_run_length_longest", 
+                              "char_freq_dol_sign", "word_freq_money", "word_freq_free",
+                              "word_freq_george", "word_freq_lab", "word_freq_meeting", 
+                              "word_freq_telnet", "word_freq_project", "word_freq_edu",
+                              "word_freq_hp", "char_freq_exclam"))
+
+
+```
+
+
+```{r}
+knn_df <- as.data.frame(matrix(0, 60, 3))
+colnames(knn_df) <- c("error", "type", "k")
+
+knn_df[31:nrow(knn_df), 2] <- "test"
+knn_df[1:30, 2] <- "train"
+
+for (i in 1:30) {
+  model_train <- knn(train=train_knn, test=train_knn, k=i, cl=train[,58])
+  model_test <- knn(train=train_knn, test=test_knn, k=i, cl=train[,58])
+  knn_df[i,1] <- round(mean(model_train != train$spam), 3)
+  knn_df[i + 30,1] <- round(mean(model_test != test$spam), 3)
+  knn_df[i,3] <- i
+  knn_df[i+30, 3] <- i
+}
+```
+
+
+```{r}
+require(ggplot2)
+
+plot <- ggplot(aes(x=k, y=error), data=knn_df)+
+  geom_line(aes(color=type))+
+  theme_bw()
+
+print(plot)
+```
+
+### KNN - Training error rate
+
+```{r}
+
+knn_train_model <- knn(train=train_knn, test=train_knn, k=3, cl=train[,58])
+
+# confusion matrix
+table(Predicted=knn_train_model, actual=train$spam)
+
+# error rate
+round(mean(knn_train_model != train$spam),3)
+```
+
+### KNN - Test error rate
+
+
+```{r}
+
+knn_test <- knn(train=train_knn, test=test_knn, k=3, cl=train[,58])
+
+# confusion matrix
+table(Predicted=knn_test, actual=test$spam)
+
+# error rate
+round(mean(knn_test != test$spam),3)
+```
+
+# Model selection
+
+Linear discriminant analysis performed noticeably worse than did the other approaches. This is likely because, with 16 predictors, drawing a linear boundary in 16 dimensional space is not possible without some margin of error. KNN and logistic regression had very similar training and test error rates. KNN forgoes a linear decision boundary in favor of a nearest neighbors approach. This works well because the number of observations is large enough that points are still somewhate dense in 16 dimensional space. The logistic regression likely performed better than the LDA because it does not require multivariate normality and is generally a more flexible model. 
+
+KNN slightly outperformed logistic regression for this dataset. With 6 and 10% training and test errors, respectively, versus 8 and 9%. 
+
+
+
